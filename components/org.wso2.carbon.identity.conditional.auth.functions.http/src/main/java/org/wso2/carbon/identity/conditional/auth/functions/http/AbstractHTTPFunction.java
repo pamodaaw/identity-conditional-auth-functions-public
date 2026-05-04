@@ -41,6 +41,7 @@ import org.wso2.carbon.identity.conditional.auth.functions.common.utils.Constant
 import org.wso2.carbon.identity.conditional.auth.functions.http.util.AuthConfig;
 import org.wso2.carbon.identity.conditional.auth.functions.http.util.AuthConfigFactory;
 import org.wso2.carbon.identity.conditional.auth.functions.http.util.AuthConfigModel;
+import org.wso2.carbon.identity.conditional.auth.functions.http.util.RefreshableAuthConfig;
 import org.wso2.carbon.utils.DiagnosticLog;
 
 import java.io.IOException;
@@ -87,7 +88,8 @@ public abstract class AbstractHTTPFunction {
 
     private enum RetryDecision {
         RETRY,
-        NO_RETRY;
+        NO_RETRY,
+        RETRY_WITH_NEW_TOKEN;
 
         public boolean shouldRetry() {
             return this == RETRY;
@@ -107,8 +109,9 @@ public abstract class AbstractHTTPFunction {
 
             HttpUriRequest request;
             try {
+                AuthConfig authConfig = null;
                 if (authConfigModelClone != null) {
-                    AuthConfig authConfig = AuthConfigFactory.getAuthConfig(authConfigModelClone, context, asyncReturn);
+                    authConfig = AuthConfigFactory.getAuthConfig(authConfigModelClone, context, asyncReturn);
                     request = authConfig.applyAuth(clientRequest, authConfigModelClone);
                 } else {
                     request = clientRequest;
@@ -124,6 +127,35 @@ public abstract class AbstractHTTPFunction {
                     asyncReturn.accept(context, Collections.emptyMap(), Constants.OUTCOME_FAIL);
                 } else {
                     Pair<RetryDecision, Pair<String, JSONObject>> result = executeRequest(request, endpointURL);
+
+                    // 401 token-refresh retry: only for auth configs that implement
+                    // RefreshableAuthConfig (currently only client-credentials), and only once.
+                    if (result.getLeft() == RetryDecision.RETRY_WITH_NEW_TOKEN
+                            && authConfig instanceof RefreshableAuthConfig) {
+                        if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                            DiagnosticLog.DiagnosticLogBuilder diagnosticLogBuilder = new
+                                    DiagnosticLog.DiagnosticLogBuilder(Constants.LogConstants.ADAPTIVE_AUTH_SERVICE,
+                                    getInvokeApiActionId(request));
+                            diagnosticLogBuilder.inputParam(Constants.LogConstants.InputKeys.API, endpointURL)
+                                    .resultMessage("External api invocation returned 401 Unauthorized. " +
+                                            "Will retry with a fresh token.")
+                                    .logDetailLevel(DiagnosticLog.LogDetailLevel.APPLICATION)
+                                    .resultStatus(DiagnosticLog.ResultStatus.FAILED);
+                            LoggerUtils.triggerDiagnosticLogEvent(diagnosticLogBuilder);
+                        }
+                        request = ((RefreshableAuthConfig) authConfig).refreshAuth(clientRequest, authConfigModelClone);
+                        result = executeRequest(request, endpointURL);
+                        // If the retry also returns 401, convert to NO_RETRY — no further attempts.
+                        if (result.getLeft() == RetryDecision.RETRY_WITH_NEW_TOKEN) {
+                            LOG.debug("Retry with fresh token also returned 401. Aborting. Url: " + endpointURL);
+                            result = Pair.of(RetryDecision.NO_RETRY, result.getRight());
+                        }
+                    } else if (result.getLeft() == RetryDecision.RETRY_WITH_NEW_TOKEN) {
+                        LOG.debug("Auth config does not support token refresh. " +
+                                "Aborting retry attempts for 401 response. Url: " + endpointURL);
+                        result = Pair.of(RetryDecision.NO_RETRY, result.getRight());
+                    }
+
                     if (result.getLeft().shouldRetry()) {
                         LOG.info("Failed to invoke the endpoint. Url: " + endpointURL + ". Retrying the request.");
                         result = executeRequestWithRetries(request, endpointURL, requestRetryCount);
@@ -238,6 +270,11 @@ public abstract class AbstractHTTPFunction {
                 outcome = Constants.OUTCOME_FAIL;
                 return Pair.of(RetryDecision.NO_RETRY, Pair.of(outcome, null)); // Unauthorized, no retry
             } else if (responseCode >= 400 && responseCode < 500) {
+                if (responseCode == 401) {
+                    LOG.warn("External api invocation returned 401 Unauthorized. Url: " + endpointURL);
+                    outcome = Constants.OUTCOME_FAIL;
+                    return Pair.of(RetryDecision.RETRY_WITH_NEW_TOKEN, Pair.of(outcome, null));
+                }
                 if (LoggerUtils.isDiagnosticLogsEnabled()) {
                     DiagnosticLog.DiagnosticLogBuilder diagnosticLogBuilder = new
                             DiagnosticLog.DiagnosticLogBuilder(Constants.LogConstants.ADAPTIVE_AUTH_SERVICE,
@@ -252,7 +289,7 @@ public abstract class AbstractHTTPFunction {
                 LOG.warn("External api invocation returned a client error. Status code: " +
                         responseCode + ". Url: " + endpointURL);
                 outcome = Constants.OUTCOME_FAIL;
-                return Pair.of(RetryDecision.NO_RETRY, Pair.of(outcome, null)); // Unauthorized, no retry
+                return Pair.of(RetryDecision.NO_RETRY, Pair.of(outcome, null)); // Client error, no retry
             } else {
                 if (LoggerUtils.isDiagnosticLogsEnabled()) {
                     DiagnosticLog.DiagnosticLogBuilder diagnosticLogBuilder = new

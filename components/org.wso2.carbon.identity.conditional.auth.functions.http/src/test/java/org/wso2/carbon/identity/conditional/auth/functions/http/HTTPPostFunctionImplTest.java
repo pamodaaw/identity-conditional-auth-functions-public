@@ -77,6 +77,9 @@ import javax.ws.rs.HeaderParam;
 import javax.ws.rs.Path;
 import javax.ws.rs.POST;
 import javax.ws.rs.Produces;
+import javax.ws.rs.WebApplicationException;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -112,6 +115,12 @@ public class HTTPPostFunctionImplTest extends JsSequenceHandlerAbstractTest {
     public static final String HTTP_POST_PAYLOAD_TEST_SP = "http-post-payload-test-sp.xml";
     private HTTPPostFunctionImpl httpPostFunction;
 
+    /**
+     * Tracks how many times the 401-then-success endpoint has been called.
+     * Reset to zero in {@link #tearDownTest()} after each test.
+     */
+    private static final AtomicInteger unauthorizedEndpointCallCount = new AtomicInteger(0);
+
     @InjectMicroservicePort
     private int microServicePort;
 
@@ -146,6 +155,7 @@ public class HTTPPostFunctionImplTest extends JsSequenceHandlerAbstractTest {
     @AfterMethod
     protected void tearDownTest() {
 
+        unauthorizedEndpointCallCount.set(0);
         reset(httpPostFunction);
     }
 
@@ -246,6 +256,33 @@ public class HTTPPostFunctionImplTest extends JsSequenceHandlerAbstractTest {
         assertEquals(result, SUCCESS,
                 "The http post request was not successful with clientcredential auth config. Result from request: " +
                         result);
+    }
+
+    /**
+     * Tests that when the API endpoint returns 401 Unauthorized on the first call,
+     * the cached token is evicted and the request is retried once with a fresh token.
+     * The retry succeeds (200 OK), so the final outcome must be SUCCESS.
+     */
+    @Test
+    public void testHttpPostMethodWith401RetrySucceeds() throws JsTestException {
+
+        String result = executeHttpPostFunction("dummy-post-401-then-success",
+                TEST_AUTH_CONFIG_WITH_CLIENTCREDENTIAL);
+        assertEquals(result, SUCCESS,
+                "The http post request with 401 retry should succeed on the second attempt.");
+    }
+
+    /**
+     * Tests that when the API endpoint consistently returns 401 Unauthorized on both the
+     * initial request and the single retry, the outcome is FAILED with no further retries.
+     */
+    @Test
+    public void testHttpPostMethodWithPersistent401Fails() throws JsTestException {
+
+        String result = executeHttpPostFunction("dummy-post-always-401",
+                TEST_AUTH_CONFIG_WITH_CLIENTCREDENTIAL);
+        assertEquals(result, FAILED,
+                "The http post request should fail when the API endpoint consistently returns 401.");
     }
 
     /**
@@ -351,6 +388,12 @@ public class HTTPPostFunctionImplTest extends JsSequenceHandlerAbstractTest {
                 return String.format(script, getRequestUrl("dummy-post-with-bearer-auth-config"));
             case "dummy-post-with-clientcredential-auth-config":
                 return String.format(script, getRequestUrl("dummy-post-with-clientcredential-auth-config"),
+                        getRequestUrl("dummy-token-endpoint"));
+            case "dummy-post-401-then-success":
+                return String.format(script, getRequestUrl("dummy-post-401-then-success"),
+                        getRequestUrl("dummy-token-endpoint"));
+            case "dummy-post-always-401":
+                return String.format(script, getRequestUrl("dummy-post-always-401"),
                         getRequestUrl("dummy-token-endpoint"));
             case "dummy-post-with-payload":
                 JsonObject Payload = sequenceHandlerRunner.loadJson(HTTP_POST_PAYLOAD, this);
@@ -524,6 +567,45 @@ public class HTTPPostFunctionImplTest extends JsSequenceHandlerAbstractTest {
             throw new JsTestException("Payloads do not match. " +
                     String.format("Expected payload: %s, Actual payload: %s", expectedPayload, actualPayload));
         }
+    }
+
+    /**
+     * Returns 401 Unauthorized on the first call, then 200 OK with a success payload on
+     * subsequent calls. Used to verify the 401 token-refresh retry behavior: the first 401
+     * triggers cache eviction + re-fetch; the retry receives 200 and the outcome is SUCCESS.
+     *
+     * <p>MSF4J does not support {@code javax.ws.rs.core.Response} as a method return type.
+     * A {@link WebApplicationException} with status 401 is used instead to signal Unauthorized,
+     * and the success path returns a {@code Map} directly (which MSF4J serialises to JSON).</p>
+     */
+    @POST
+    @Path("/dummy-post-401-then-success")
+    @Produces("application/json")
+    @Consumes("application/json")
+    public Map<String, String> dummyPost401ThenSuccess(Map<String, String> data) {
+
+        if (unauthorizedEndpointCallCount.getAndIncrement() == 0) {
+            throw new WebApplicationException(401);
+        }
+        Map<String, String> response = new HashMap<>();
+        response.put(STATUS, SUCCESS);
+        return response;
+    }
+
+    /**
+     * Always returns 401 Unauthorized, simulating a permanently revoked token.
+     * Used to verify that the 401 retry is attempted exactly once and then gives up.
+     *
+     * <p>See {@link #dummyPost401ThenSuccess} for why {@link WebApplicationException} is
+     * used instead of {@code javax.ws.rs.core.Response}.</p>
+     */
+    @POST
+    @Path("/dummy-post-always-401")
+    @Produces("application/json")
+    @Consumes("application/json")
+    public Map<String, String> dummyPostAlways401(Map<String, String> data) {
+
+        throw new WebApplicationException(401);
     }
 
     /**

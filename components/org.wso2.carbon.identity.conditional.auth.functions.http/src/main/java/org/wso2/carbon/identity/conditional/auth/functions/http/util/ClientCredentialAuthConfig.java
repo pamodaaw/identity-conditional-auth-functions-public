@@ -68,7 +68,7 @@ import static org.wso2.carbon.identity.conditional.auth.functions.http.util.Http
  * This class is used to configure the client credential authentication.
  * The client credential is used to request the access token from the token endpoint.
  */
-public class ClientCredentialAuthConfig implements AuthConfig {
+public class ClientCredentialAuthConfig implements RefreshableAuthConfig {
 
     private static final Log LOG = LogFactory.getLog(ClientCredentialAuthConfig.class);
     private static final String TYPE_APPLICATION_JSON = "application/json";
@@ -158,8 +158,7 @@ public class ClientCredentialAuthConfig implements AuthConfig {
             throws FrameworkException {
 
         setRequest(request);
-        maxRequestAttemptsForAPIEndpointTimeout = ConfigProvider.getInstance().
-                getRequestRetryCount();
+        maxRequestAttemptsForAPIEndpointTimeout = ConfigProvider.getInstance().getRequestRetryCount();
         this.apiAccessTokenExpiryCache = APIAccessTokenExpiryCache.getInstance();
         Map<String, Object> properties = authConfigModel.getProperties();
         validateRequiredProperties(properties);
@@ -190,6 +189,32 @@ public class ClientCredentialAuthConfig implements AuthConfig {
         }
         request.setHeader(AUTHORIZATION, BEARER + accessToken);
         return request;
+    }
+
+    /**
+     * Invalidates the cached access token and re-applies authentication to the given request
+     * using a freshly obtained token from the token endpoint.
+     * <p>
+     * This method is called by
+     * {@link org.wso2.carbon.identity.conditional.auth.functions.http.AbstractHTTPFunction}
+     * when the API endpoint returns {@code 401 Unauthorized}, indicating the cached token
+     * has been revoked or has otherwise become invalid server-side.
+     *
+     * @param request         the original {@link HttpUriRequest} to authenticate
+     * @param authConfigModel the authentication configuration model
+     * @return the authenticated request decorated with a fresh Bearer token
+     * @throws FrameworkException if token retrieval fails
+     */
+    @Override
+    public HttpUriRequest refreshAuth(HttpUriRequest request, AuthConfigModel authConfigModel)
+            throws FrameworkException {
+
+        if (apiAccessTokenExpiryCache != null && consumerKey != null && authenticationContext != null) {
+            apiAccessTokenExpiryCache.clearCacheEntry(consumerKey, authenticationContext.getTenantDomain());
+            LOG.debug("Evicted cached access token for consumer key: " + consumerKey +
+                    " due to 401 Unauthorized response from the API endpoint.");
+        }
+        return applyAuth(request, authConfigModel);
     }
 
     /**

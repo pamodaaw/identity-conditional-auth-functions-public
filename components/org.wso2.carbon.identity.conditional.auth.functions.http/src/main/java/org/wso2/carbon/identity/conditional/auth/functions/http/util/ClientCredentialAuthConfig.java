@@ -520,12 +520,11 @@ public class ClientCredentialAuthConfig implements RefreshableAuthConfig {
             if (expiryDate != null) {
                 return expiryDate.toInstant().getEpochSecond();
             }
-            return null;
         } catch (ParseException e) {
             LOG.debug("Access token is not a JWT or could not be parsed; treating as opaque token.");
         }
 
-        // Opaque token: derive expiry from expires_in if present (RFC 6749 §4.2.2 — optional).
+        // Derive expiry from expires_in if present (RFC 6749 §4.2.2 — optional).
         if (StringUtils.isNotEmpty(expiresInStr)) {
             try {
                 long expiresInSeconds = Long.parseLong(expiresInStr);

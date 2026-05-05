@@ -147,7 +147,17 @@ public abstract class AbstractHTTPFunction {
                         result = executeRequest(request, endpointURL);
                         // If the retry also returns 401, convert to NO_RETRY — no further attempts.
                         if (result.getLeft() == RetryDecision.RETRY_WITH_NEW_TOKEN) {
-                            LOG.debug("Retry with fresh token also returned 401. Aborting. Url: " + endpointURL);
+                            if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                                DiagnosticLog.DiagnosticLogBuilder diagnosticLogBuilder = new
+                                        DiagnosticLog.DiagnosticLogBuilder(Constants.LogConstants.ADAPTIVE_AUTH_SERVICE,
+                                        getInvokeApiActionId(request));
+                                diagnosticLogBuilder.inputParam(Constants.LogConstants.InputKeys.API, endpointURL)
+                                        .resultMessage("Retry with fresh token also returned 401 Unauthorized. " +
+                                                "Aborting further retry attempts.")
+                                        .logDetailLevel(DiagnosticLog.LogDetailLevel.APPLICATION)
+                                        .resultStatus(DiagnosticLog.ResultStatus.FAILED);
+                                LoggerUtils.triggerDiagnosticLogEvent(diagnosticLogBuilder);
+                            }
                             result = Pair.of(RetryDecision.NO_RETRY, result.getRight());
                         }
                     } else if (result.getLeft() == RetryDecision.RETRY_WITH_NEW_TOKEN) {

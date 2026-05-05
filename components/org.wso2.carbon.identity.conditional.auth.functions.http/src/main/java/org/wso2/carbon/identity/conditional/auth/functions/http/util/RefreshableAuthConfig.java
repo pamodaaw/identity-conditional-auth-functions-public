@@ -18,6 +18,7 @@
 package org.wso2.carbon.identity.conditional.auth.functions.http.util;
 
 import org.apache.http.client.methods.HttpUriRequest;
+import org.wso2.carbon.identity.application.authentication.framework.exception.FrameworkException;
 
 /**
  * Extension of {@link AuthConfig} for authentication configurations that maintain a token cache
@@ -35,7 +36,7 @@ public interface RefreshableAuthConfig extends AuthConfig {
      * @param request         the original {@link HttpUriRequest} to authenticate
      * @param authConfigModel the authentication configuration model
      * @return the authenticated {@link HttpUriRequest}, ready to be re-sent
-     * @throws Exception if token retrieval or request decoration fails
+     * @throws FrameworkException if an error occurs while refreshing the authentication
      */
-    HttpUriRequest refreshAuth(HttpUriRequest request, AuthConfigModel authConfigModel) throws Exception;
+    HttpUriRequest refreshAuth(HttpUriRequest request, AuthConfigModel authConfigModel) throws FrameworkException;
 }
